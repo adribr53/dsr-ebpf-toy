@@ -131,9 +131,27 @@ status() {
   done
 }
 
+load_lb_ipoption_set() {
+  need_root
+  # Example: load the same XDP program on all interfaces in the LB namespace.
+  for iface in cl0; do
+    ip netns exec "$NS_L" ip link set dev "$iface" xdp obj ebpf/xdp.o sec xdp
+  done
+}
+
+load_lb_ipoption_unset() {
+  need_root
+  # Example: load the same XDP program on all interfaces in the LB namespace.
+  for iface in cl0; do
+    ip netns exec "$NS_L" ip link set dev "$iface" xdp off
+  done
+}
+
 case "${1:-}" in
   up) up ;;
   down) down ;;
   status) status ;;
+  load_lb_ipoption_set) load_lb_ipoption_set ;;
+  load_lb_ipoption_unset) load_lb_ipoption_unset ;;
   *) echo "usage: $0 up | down | status" >&2; exit 1 ;;
 esac
