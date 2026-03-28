@@ -135,7 +135,9 @@ load_lb_ipoption_set() {
   need_root
   # Example: load the same XDP program on all interfaces in the LB namespace.
   for iface in cl0; do
-    ip netns exec "$NS_L" ip link set dev "$iface" xdp obj ebpf/xdp.o sec xdp
+    ip netns exec "$NS_L" ip link set dev "$iface" xdp obj ebpf/xdp_lb.o sec xdp
+    map_id=$(sudo bpftool map list | grep service_dsr_ipv | cut -d: -f1)    
+    sudo bpftool map pin id $map_id /sys/fs/bpf/service_dsr_ipv4
   done
 }
 
@@ -144,6 +146,7 @@ load_lb_ipoption_unset() {
   # Example: load the same XDP program on all interfaces in the LB namespace.
   for iface in cl0; do
     ip netns exec "$NS_L" ip link set dev "$iface" xdp off
+    sudo rm /sys/fs/bpf/service_dsr_ipv4
   done
 }
 
