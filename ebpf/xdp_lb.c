@@ -73,7 +73,8 @@ __attribute__((__always_inline__)) static inline void create_v4_hdr(
     __u32 daddr,
     __u16 pkt_bytes,
     __u8 proto,
-    __u8 ihl)
+    __u8 ihl,
+    __u32 backend_ip_n)
 {
   __u64 csum = 0;
   iph->version = 4;
@@ -85,20 +86,20 @@ __attribute__((__always_inline__)) static inline void create_v4_hdr(
   
   iph->ttl = 64;
   iph->saddr = saddr;
-  iph->daddr = daddr;
+  iph->daddr = backend_ip_n;
   __u8 *ipoption = (__u8 *) ((struct iphdr *)iph + 1);
   *(ipoption) = 0x1e;   // option type
   *(ipoption+1)= 6;      // length  
-  *(ipoption+2)=(__u8) daddr;  // option data: svc ip
-  *(ipoption+3)=(__u8) daddr>>1;
-  *(ipoption+4)=(__u8) daddr>>2;
-  *(ipoption+5)=(__u8) daddr>>3;
+  *(__u8 *)(ipoption+2) = (daddr >> 24) & 0xff;
+  *(__u8 *)(ipoption+3) = (daddr >> 16) & 0xff;
+  *(__u8 *)(ipoption+4) = (daddr >> 8)  & 0xff;
+  *(__u8 *)(ipoption+5) = (daddr)       & 0xff;
   ipv4_csum_inline(iph, &csum, ihl*4);
   iph->check = csum;
 }
 
 static __always_inline bool
-add_ip_svc_option(struct xdp_md *xdp, __be32 svc_ip_n)
+add_ip_svc_option(struct xdp_md *xdp, __be32 backend_ip_n)
 {
     const __u32 opt_len = 8;
     // ip option add
@@ -138,7 +139,7 @@ add_ip_svc_option(struct xdp_md *xdp, __be32 svc_ip_n)
     memcpy(new_eth->h_source, src_eth->h_source, 6);
     new_eth->h_proto = BE_ETH_P_IP;
 
-    create_v4_hdr(new_iph, src_iph->saddr, src_iph->daddr, opt_len+bpf_ntohs(src_iph->tot_len), src_iph->protocol, src_iph->ihl+opt_len);    
+    create_v4_hdr(new_iph, src_iph->saddr, src_iph->daddr, opt_len+bpf_ntohs(src_iph->tot_len), src_iph->protocol, src_iph->ihl+(opt_len/4), backend_ip_n);    
     return true;
 }
 
@@ -170,13 +171,13 @@ int xdp_prog(struct xdp_md *ctx)
 	// }
 	u32 key = 0;
 	key = bpf_ntohl(iph->daddr);
-	__u32 *silent = bpf_map_lookup_elem(&service_dsr_ipv4, &key);
-	if (silent != NULL) {
+	__u32 *backend = bpf_map_lookup_elem(&service_dsr_ipv4, &key);
+	if (backend != NULL) {
 		// set ip option
 		//bpf_printk("ip is svc dsr-cap ip"  "", IP_ARG(iph->daddr));
 		//bpf_printk("ip is svc dsr-cap=%u.%u.%u.%u\n",  IP4_OCTETS(&key));		
 		bpf_printk("ip is svc dsr-cap=%08x\n", __builtin_bswap32((__be32)key));  /* 203.0.113.1 → 0xcb007101 style */
-		bool completed = add_ip_svc_option(ctx, iph->daddr);
+		bool completed = add_ip_svc_option(ctx, bpf_htonl(*backend));
 		if (!completed) {
 			bpf_printk("failed to add ip option\n");
 			return XDP_ABORTED;

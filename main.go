@@ -11,8 +11,10 @@ import (
 func main() {
 	var (
 		serviceDsrIpv4 string
+		backendIpv4    string
 	)
 	serviceDsrIpv4 = "1.1.1.1"
+	backendIpv4 = "10.200.2.2"
 
 	m, err := ebpf.LoadPinnedMap("/sys/fs/bpf/service_dsr_ipv4", nil)
 	if err != nil {
@@ -23,7 +25,8 @@ func main() {
 		fmt.Printf("failed to convert %s to int", serviceDsrIpv4)
 		panic(err)
 	}
-	err = m.Update(vip, uint32(0), ebpf.UpdateAny)
+	backend, err := ipconv.IPv4ToInt(net.ParseIP(backendIpv4))
+	err = m.Update(vip, backend, ebpf.UpdateAny)
 	if err != nil {
 		panic(fmt.Errorf("put failed: %w", err))
 	}

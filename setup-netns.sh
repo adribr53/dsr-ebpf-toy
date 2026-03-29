@@ -102,6 +102,11 @@ up() {
   # lb -> 10.200.3.0/30 via server (third leg of the ring)
   run_in "$NS_L" ip route add "${P}.3.0/30" via "${P}.2.2" dev srv0
 
+  # dsr flow.  
+  run_in "$NS_LB" iptables -t nat -A PREROUTING -d 1.1.1.1 -j DNAT --to-destination "${P}.2.2"
+  run_in "$NS_LB" iptables -t nat -A POSTROUTING -d "${P}.2.2" -j MASQUERADE
+  run_in "$NS_C" ip r add 1.1.1.1/32 via "${P}.1.2"
+
   echo "up: $NS_C / $NS_L / $NS_S"
   echo "  client  lb0=${P}.1.1  srv0=${P}.3.2"
   echo "  lb      cl0=${P}.1.2  srv0=${P}.2.1  (ip_forward=1)"
@@ -110,7 +115,7 @@ up() {
   echo "Examples:"
   echo "  ip netns exec $NS_C ping -c1 ${P}.1.2"
   echo "  ip netns exec $NS_C ping -c1 ${P}.2.2"
-  echo "  ip netns exec $NS_C ping -c1 ${P}.3.1"
+  echo "  ip netns exec $NS_C ping -c1 ${P}.3.1"  
 }
 
 down() {
