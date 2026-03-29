@@ -12,6 +12,9 @@
 #                    srv0 <-> cl0
 #
 # Usage (root):  ./setup-netns.sh up | down | status
+# sudo ip netns exec dsr-client ip r add 1.1.1.1/32 via 10.200.1.2
+# sudo ip netns exec dsr-lb ip r add 1.1.1.1/32 via 10.200.2.2 # will be managed by lb, iptables in prerouting for dnat in first instance
+#
 #
 set -euo pipefail
 
@@ -137,6 +140,7 @@ load_lb_ipoption_set() {
   for iface in cl0; do
     ip netns exec "$NS_L" ip link set dev "$iface" xdp obj ebpf/xdp_lb.o sec xdp
     map_id=$(sudo bpftool map list | grep service_dsr_ipv | cut -d: -f1)    
+    echo mapId is $map_id
     sudo bpftool map pin id $map_id /sys/fs/bpf/service_dsr_ipv4
   done
 }
