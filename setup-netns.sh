@@ -139,23 +139,36 @@ status() {
   done
 }
 
-load_lb_ipoption_set() {
+load_ebpf() {
   need_root
   # Example: load the same XDP program on all interfaces in the LB namespace.
   for iface in cl0; do
-    ip netns exec "$NS_L" ip link set dev "$iface" xdp obj ebpf/xdp_lb.o sec xdp
+    #ip netns exec "$NS_L" ip link set dev "$iface" xdp obj ebpf/xdp_lb.o sec xdp
+    #ip netns exec "$NS_L" ip link set dev "$iface" xdp off
+    #sudo ip netns exec "$NS_L" tc qdisc add dev "$iface" clsact
+    sudo ip netns exec "$NS_L" tc filter add dev "$iface" ingress bpf da obj ebpf/tc_lb.o sec tc
     map_id=$(sudo bpftool map list | grep service_dsr_ipv | cut -d: -f1)    
     echo mapId is $map_id
     sudo bpftool map pin id $map_id /sys/fs/bpf/service_dsr_ipv4
   done
+  for iface in lb0; do
+    ip netns exec "$NS_S" ip link set dev "$iface" xdp obj ebpf/xdp_ingress_backend.o sec xdp
+    map_id=$(sudo bpftool map list | grep flow_to_dsr | cut -d: -f1)    
+    echo mapId is $map_id
+    sudo bpftool map pin id $map_id /sys/fs/bpf/flow_to_dsr
+  done
 }
 
-load_lb_ipoption_unset() {
+unload_ebpf() {
   need_root
   # Example: load the same XDP program on all interfaces in the LB namespace.
   for iface in cl0; do
-    ip netns exec "$NS_L" ip link set dev "$iface" xdp off
+    sudo ip netns exec "$NS_L" tc filter del dev "$iface" ingress
     sudo rm /sys/fs/bpf/service_dsr_ipv4
+  done
+  for iface in lb0; do
+    ip netns exec "$NS_S" ip link set dev "$iface" xdp off
+    sudo rm /sys/fs/bpf/flow_to_dsr
   done
 }
 
@@ -163,7 +176,7 @@ case "${1:-}" in
   up) up ;;
   down) down ;;
   status) status ;;
-  load_lb_ipoption_set) load_lb_ipoption_set ;;
-  load_lb_ipoption_unset) load_lb_ipoption_unset ;;
+  load_ebpf) load_ebpf ;;
+  unload_ebpf) unload_ebpf ;;
   *) echo "usage: $0 up | down | status" >&2; exit 1 ;;
 esac

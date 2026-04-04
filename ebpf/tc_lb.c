@@ -4,6 +4,9 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_endian.h>
 
+#define TC_ACT_OK 0
+#define TC_ACT_SHOT -1
+#define TC_ACT_REDIRECT 7
 #define IP4_OCTETS(a)  (a)[0], (a)[1], (a)[2], (a)[3]
 #define MAX_MAP_ENTRIES 1
 #define BE_ETH_P_IP 8
@@ -61,12 +64,6 @@ __attribute__((__always_inline__)) static inline void ipv4_csum_inline(
   *csum = csum_fold_helper(*csum);
 }
 
-// __attribute__((__always_inline__)) static inline void
-// ipv4_csum(void* data_start, int data_size, __u64* csum) {
-//   *csum = bpf_csum_diff(0, 0, data_start, data_size, *csum);
-//   *csum = csum_fold_helper(*csum);
-// }
-
 __attribute__((__always_inline__)) static inline void create_v4_hdr(
     struct iphdr *iph,
     __u32 saddr,
@@ -74,7 +71,8 @@ __attribute__((__always_inline__)) static inline void create_v4_hdr(
     __u16 pkt_bytes,
     __u8 proto,
     __u8 ihl,
-    __u32 backend_ip_n)
+    __u32 backend_ip_n,
+    void *data_end)
 {
   __u64 csum = 0;
   iph->version = 4;
@@ -88,6 +86,10 @@ __attribute__((__always_inline__)) static inline void create_v4_hdr(
   iph->saddr = saddr;
   iph->daddr = backend_ip_n;
   __u8 *ipoption = (__u8 *) ((struct iphdr *)iph + 1);
+  if ((void *)(ipoption+6) > data_end) {
+    bpf_printk("lookup_ip_svc_option: fail ipopt+5 oob\n");
+    return;
+  }
   *(ipoption) = 0x1e;   // option type
   *(ipoption+1)= 6;      // length  
   *(__u8 *)(ipoption+2) = (daddr >> 24) & 0xff;
@@ -99,95 +101,70 @@ __attribute__((__always_inline__)) static inline void create_v4_hdr(
 }
 
 static __always_inline bool
-add_ip_svc_option(struct xdp_md *xdp, __be32 backend_ip_n)
+add_ip_svc_option(struct __sk_buff *skb, __be32 backend_ip_n)
 {
     const __u32 opt_len = 8;
     // ip option add
-    if (bpf_xdp_adjust_head(xdp, 0 - (int)opt_len))
-    {
-        return false;
-    }
+    if (bpf_skb_adjust_room(skb, (int)opt_len, BPF_ADJ_ROOM_NET, 0)) {
+      return false;
+    }      
+    void *data = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
 
-    void *data = (void *)(long)xdp->data;
-    void *data_end = (void *)(long)xdp->data_end;
-
-    struct ethhdr *new_eth = data;
-    if ((void *)(new_eth + 1) > data_end) {
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end) {
         bpf_printk("add_ip_opt: fail new_eth+1 oob\n");
         return false;
     }
-    struct iphdr *new_iph = (void *)(new_eth + 1);
-    if ((void *)(new_iph + 1) > data_end) {
+    const __u8 lb_srv0_mac[6] = {0xce, 0x34, 0x01, 0x65, 0x38, 0x50};
+    const __u8 srv_cl0_mac[6] = {0xc6, 0xbe, 0x3e, 0x83, 0xa9, 0x36};
+    memcpy(eth->h_source, lb_srv0_mac, 6); //sudo ip netns exec dsr-lb cat /sys/class/net/srv0/address
+    memcpy(eth->h_dest, srv_cl0_mac, 6); //sudo ip netns exec dsr-server cat /sys/class/net/cl0/address
+    struct iphdr *iph = (void *)(eth + 1);
+    if ((void *)(iph + 1) > data_end) {
         bpf_printk("add_ip_opt: fail new_iph+1 oob\n");
         return false;
-    }
-    struct ethhdr *src_eth = (void *)data + opt_len;
-    if ((void *)(src_eth + 1) > data_end) {
-        bpf_printk("add_ip_opt: fail src_eth+1 oob\n");
-        return false;
-    }
-    struct iphdr *src_iph = (void *)src_eth + sizeof(*src_eth);
-    if ((void *)(src_iph + 1) > data_end) {
-        bpf_printk("add_ip_opt: fail src_iph+1 oob\n");
-        return false;
-    }
-    memcpy(new_eth->h_dest, src_eth->h_dest, 6);
-    if ((void *) src_eth->h_dest + 6 > data_end)
-    {
-        return false;
-    }
-    memcpy(new_eth->h_source, src_eth->h_source, 6);
-    new_eth->h_proto = BE_ETH_P_IP;
+    }    
 
-    create_v4_hdr(new_iph, src_iph->saddr, src_iph->daddr, opt_len+bpf_ntohs(src_iph->tot_len), src_iph->protocol, src_iph->ihl+(opt_len/4), backend_ip_n);    
+    create_v4_hdr(iph, iph->saddr, iph->daddr, opt_len+bpf_ntohs(iph->tot_len), iph->protocol, iph->ihl+(opt_len/4), backend_ip_n, data_end);    
     return true;
 }
 
-SEC("xdp")
-int xdp_prog(struct xdp_md *ctx)
+SEC("tc")
+int tc_prog(struct __sk_buff *skb)
 {
-	void *data = (void *)(long)ctx->data;
-	void *data_end = (void *)(long)ctx->data_end;
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
 
 	struct ethhdr *eth = data;
 	if ((void *)(eth + 1) > data_end)
-		return XDP_ABORTED;
+		return TC_ACT_SHOT;
 
 	if (eth->h_proto != BE_ETH_P_IP)
-		return XDP_PASS;
+		return TC_ACT_OK;
 
 	struct iphdr *iph = (void *)(eth + 1);
 	if ((void *)(iph + 1) > data_end)
-		return XDP_ABORTED;
-
-	// __u32 *service_dsr_cnt;
-	// service_dsr_cnt = bpf_map_lookup_elem(&service_dsr_ipv4, &iph->daddr);
-	// if (service_dsr_cnt) {
-	// 	__u64 service_dsr_cnt_value = *service_dsr_cnt + 1;
-	// 	bpf_map_update_elem(&service_dsr_ipv4, &iph->daddr, &service_dsr_cnt_value, BPF_EXIST);
-	// } else {
-	// 	__u64 service_dsr_cnt_value = 1;
-	// 	bpf_map_update_elem(&service_dsr_ipv4, &iph->daddr, &service_dsr_cnt_value, BPF_NOEXIST);
-	// }
+		return TC_ACT_SHOT;
+	
 	u32 key = 0;
 	key = bpf_ntohl(iph->daddr);
-	__u32 *backend = bpf_map_lookup_elem(&service_dsr_ipv4, &key);
+	__u32 *backend = bpf_map_lookup_elem(&service_dsr_ipv4, &key); // get backend for svc ip
 	if (backend != NULL) {
 		// set ip option
-		//bpf_printk("ip is svc dsr-cap ip"  "", IP_ARG(iph->daddr));
-		//bpf_printk("ip is svc dsr-cap=%u.%u.%u.%u\n",  IP4_OCTETS(&key));		
-		bpf_printk("ip is svc dsr-cap=%08x\n", __builtin_bswap32((__be32)key));  /* 203.0.113.1 → 0xcb007101 style */
-		bool completed = add_ip_svc_option(ctx, bpf_htonl(*backend));
+    bpf_printk("ip is svc dsr-cap=%08x\n", __builtin_bswap32((__be32)key));  /* 203.0.113.1 → 0xcb007101 style */
+		bool completed = add_ip_svc_option(skb, bpf_htonl(*backend));
 		if (!completed) {
 			bpf_printk("failed to add ip option\n");
-			return XDP_ABORTED;
+			return TC_ACT_SHOT;
 		} else {
 			bpf_printk("successfully added ip option\n");
 		}
 	} else {
-		//sudo cat /sys/kernel/debug/tracing/trace_pipe
-		//bpf_printk("std ip=%u.%u.%u.%u\n", IP4_OCTETS(&key));
 		bpf_printk("ip=%08x\n", __builtin_bswap32((__be32)iph->daddr));  /* 203.0.113.1 → 0xcb007101 style */
-	}
-	return XDP_PASS;
+    return TC_ACT_OK;
+  }
+  __u32 ifindex = 9529; // TODO, set from sudo ip netns exec dsr-lb cat /sys/class/net/srv0/ifindex;
+  bpf_redirect(ifindex, 0);
+	return TC_ACT_REDIRECT;
 }

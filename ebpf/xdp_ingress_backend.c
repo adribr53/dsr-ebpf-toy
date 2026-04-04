@@ -1,0 +1,109 @@
+#define BPF_NO_GLOBAL_DATA
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include <bpf/bpf_endian.h>
+
+#define IP4_OCTETS(a)  (a)[0], (a)[1], (a)[2], (a)[3]
+#define MAX_MAP_ENTRIES 1
+#define BE_ETH_P_IP 8
+#define BE_ETH_P_IPV6 56710
+#define MAX_IP_HDR_LENGTH 60
+#ifndef memcpy
+#define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
+#endif
+
+
+char LICENSE[] SEC("license") = "GPL";
+
+struct flow_key {
+    __u32 src_ip;
+    __u32 dst_ip;
+    __u16 src_port;
+    __u16 dst_port;
+    __u8  proto;
+    __u8  pad[3]; // explicit padding, BPF map keys are compared byte-for-byte
+};
+
+struct bpf_map_def SEC("maps") flow_to_dsr = { // fed by userspace, read by xdp
+	.type        = BPF_MAP_TYPE_HASH,
+	.key_size    = sizeof(struct flow_key),
+	.value_size  = sizeof(u32),
+	.max_entries = 1024,
+};
+
+static __always_inline bool
+lookup_ip_svc_option(struct xdp_md *xdp, struct flow_key *key, __u32 *svc)
+{    
+
+    void *data = (void *)(long)xdp->data;
+    void *data_end = (void *)(long)xdp->data_end;
+
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end) {
+        bpf_printk("lookup_ip_svc_option: fail eth+1 oob\n");
+        return false;
+    }
+    struct iphdr *iph = (void *)(eth + 1);
+    if ((void *)(iph + 1) > data_end) {
+        bpf_printk("lookup_ip_svc_option: fail iph+1 oob\n");
+        return false;
+    }
+    key->src_ip = iph->daddr;
+    key->dst_ip = iph->saddr;
+    __u8 *ipopt = (__u8 *) (iph+1);
+    if ((void *)(ipopt+1) > data_end) {
+        bpf_printk("lookup_ip_svc_option: fail ip option oob\n");
+        return false;
+    }
+    if (*ipopt != 0x1e) {
+        bpf_printk("lookup_ip_svc_option: ip option isn't set\n");
+        return false;
+    }
+    if ((void *)(ipopt+2) > data_end) {
+        bpf_printk("lookup_ip_svc_option: fail ipopt+1 oob\n");
+        return false;
+    }
+    __u8 optLen = *(ipopt+1);
+    if (optLen!=6) {
+        bpf_printk("lookup_ip_svc_option: ip option len isn't std\n");
+        return false;
+    }
+    if ((void *)(ipopt+6) > data_end) {
+        bpf_printk("lookup_ip_svc_option: fail ipopt+5 oob\n");
+        return false;
+    }
+    __u32 svcAddr = 0;
+    svcAddr |=  ((__u32)*(ipopt+2)) << 24;
+    svcAddr |=  ((__u32)*(ipopt+3)) << 16;
+    svcAddr |=  ((__u32)*(ipopt+4)) << 8;
+    svcAddr |=  ((__u32)*(ipopt+5));
+    *svc = svcAddr;
+    if ((void *) (ipopt+6) > data_end) {
+        bpf_printk("lookup_ip_svc_option: fail ipopt+6 oob\n");
+        return false;
+    }
+    struct tcphdr *tcph = (void *)(ipopt+6);
+    if ((void *)(tcph+1) > data_end) {
+        bpf_printk("lookup_ip_svc_option: fail tcph+1 oob\n");
+        return false;
+    }
+    key->dst_port = tcph->dest;
+    key->src_port = tcph->source;
+    
+    return true;
+}
+
+SEC("xdp")
+int xdp_ingress_backend_prog(struct xdp_md *ctx) {
+    __u32 mysvc = 0;
+    struct flow_key mykey = {0};
+    bpf_printk("lookup_ip_svc_option: starting\n");
+    if (lookup_ip_svc_option(ctx, &mykey, &mysvc)) {
+        bpf_printk("lookup_ip_svc_option: insertion about to happen\n");
+        bpf_map_update_elem(&flow_to_dsr, &mykey, &mysvc, BPF_NOEXIST);
+    }
+    bpf_printk("lookup_ip_svc_option: ended\n");
+    // TODO: remove ip option
+    return XDP_PASS;
+}
