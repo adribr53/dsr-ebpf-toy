@@ -86,14 +86,14 @@ lookup_ip_svc_option(struct __sk_buff *skb, struct flow_key *key, __u32 *svc)
         bpf_printk("lookup_ip_svc_option: fail ipopt+6 oob\n");
         return false;
     }
-    struct tcphdr *tcph = (void *)(ipopt+6);
+    struct tcphdr *tcph = (void *)(ipopt+8);
     if ((void *)(tcph+1) > data_end) {
         bpf_printk("lookup_ip_svc_option: fail tcph+1 oob\n");
         return false;
     }
     key->dst_port = tcph->dest;
     key->src_port = tcph->source;
-    
+    key->proto = iph->protocol;
     return true;
 }
 
@@ -148,7 +148,7 @@ remove_ip_svc_option(struct __sk_buff *skb) {
     return true;
 }
 
-SEC("tc")
+SEC("classifier")
 int tc_ingress_backend_prog(struct __sk_buff *skb) {
     __u32 mysvc = 0;
     struct flow_key mykey = {0};

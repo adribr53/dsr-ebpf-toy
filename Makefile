@@ -48,11 +48,14 @@ help:
 	@echo "Variables: BPFTOOL, VMLINUX_BTF (default /sys/kernel/btf/vmlinux), CLANG, LLVM_STRIP, LIBBPF_CPPFLAGS"
 	@echo "If bpf_helpers.h is missing: install libbpf-dev (Debian/Ubuntu) or set LIBBPF_CPPFLAGS=-I/path/to/libbpf/include"
 
-all: vmlinux-h $(BPF_OBJS)
-	@echo "Built: $(BPF_OBJS)"
+all: vmlinux-h $(BPF_OBJS) dsr-ebpf-toy
+	@echo "Built: $(BPF_OBJS) dsr-ebpf-toy"
 
 list:
 	@echo "BPF sources: $(BPF_SRCS)"
+
+dsr-ebpf-toy:
+	go build .
 
 vmlinux-h: $(VMLINUX_H)
 

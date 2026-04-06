@@ -85,6 +85,7 @@ up() {
   run_in "$NS_L" ip link set cl0 up
   run_in "$NS_L" ip link set srv0 up
   run_in "$NS_L" ip link set lo up
+  #run_in "$NS_L" ip route add 1.1.1.1/32 via ${P}.1.1
 
   run_in "$NS_S" ip addr add "${P}.2.2/30" dev lb0
   run_in "$NS_S" ip addr add "${P}.3.1/30" dev cl0
@@ -143,18 +144,22 @@ load_ebpf() {
   need_root
   # Example: load the same XDP program on all interfaces in the LB namespace.
   for iface in cl0; do
-    #sudo ip netns exec "$NS_L" tc qdisc add dev "$iface" clsact
+    sudo ip netns exec "$NS_L" tc qdisc add dev "$iface" clsact || echo true
     sudo ip netns exec "$NS_L" tc filter add dev "$iface" ingress bpf da obj ebpf/tc_lb.o sec tc
-    map_id=$(sudo bpftool map list | grep service_dsr_ipv | cut -d: -f1)    
+    map_id=$(sudo bpftool map list | grep service_dsr_ipv | cut -d: -f1)
     echo mapId is $map_id
     sudo bpftool map pin id $map_id /sys/fs/bpf/service_dsr_ipv4
   done
   for iface in lb0; do
-    #sudo ip netns exec "$NS_S" tc qdisc add dev "$iface" clsact
-    sudo ip netns exec "$NS_S" tc filter add dev "$iface" ingress bpf da obj ebpf/tc_ingress_backend.o sec tc    
-    map_id=$(sudo bpftool map list | grep flow_to_dsr | cut -d: -f1)    
-    echo mapId is $map_id
-    sudo bpftool map pin id $map_id /sys/fs/bpf/flow_to_dsr
+    sudo bpftool prog load ebpf/tc_egress_backend.o /sys/fs/bpf/tc_egress_backend \
+    pinmaps /sys/fs/bpf/
+    sudo bpftool prog load ebpf/tc_ingress_backend.o /sys/fs/bpf/tc_ingress_backend \
+    map name flow_to_dsr pinned /sys/fs/bpf/flow_to_dsr
+    sudo nsenter --net=/var/run/netns/dsr-server \
+    tc filter add dev $iface egress bpf da object-pinned /sys/fs/bpf/tc_egress_backend
+    sudo nsenter --net=/var/run/netns/dsr-server \
+    tc filter add dev $iface ingress bpf da object-pinned /sys/fs/bpf/tc_ingress_backend  
+    sudo ./dsr-ebpf-toy &  
   done
 }
 
@@ -166,7 +171,10 @@ unload_ebpf() {
     sudo rm /sys/fs/bpf/service_dsr_ipv4
   done
   for iface in lb0; do
-    sudo ip netns exec "$NS_S" tc filter del dev "$iface" ingress
+    sudo nsenter --net=/var/run/netns/dsr-server tc filter del dev $iface egress
+    sudo nsenter --net=/var/run/netns/dsr-server tc filter del dev $iface ingress
+    sudo rm /sys/fs/bpf/tc_egress_backend
+    sudo rm /sys/fs/bpf/tc_ingress_backend
     sudo rm /sys/fs/bpf/flow_to_dsr
   done
 }
