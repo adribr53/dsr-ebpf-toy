@@ -92,6 +92,7 @@ up() {
   run_in "$NS_S" ip link set lb0 up
   run_in "$NS_S" ip link set cl0 up
   run_in "$NS_S" ip link set lo up
+  run_in "$NS_S" ip route add ${P}.1.1 via 10.200.3.2
 
   # LB forwards when you hairpin or forward between legs.
   run_in "$NS_L" sysctl -q net.ipv4.ip_forward=1
@@ -143,24 +144,23 @@ status() {
 load_ebpf() {
   need_root
   # Example: load the same XDP program on all interfaces in the LB namespace.
-  for iface in cl0; do
-    sudo ip netns exec "$NS_L" tc qdisc add dev "$iface" clsact || echo true
-    sudo ip netns exec "$NS_L" tc filter add dev "$iface" ingress bpf da obj ebpf/tc_lb.o sec tc
-    map_id=$(sudo bpftool map list | grep service_dsr_ipv | cut -d: -f1)
-    echo mapId is $map_id
-    sudo bpftool map pin id $map_id /sys/fs/bpf/service_dsr_ipv4
-  done
-  for iface in lb0; do
-    sudo bpftool prog load ebpf/tc_egress_backend.o /sys/fs/bpf/tc_egress_backend \
-    pinmaps /sys/fs/bpf/
-    sudo bpftool prog load ebpf/tc_ingress_backend.o /sys/fs/bpf/tc_ingress_backend \
-    map name flow_to_dsr pinned /sys/fs/bpf/flow_to_dsr
-    sudo nsenter --net=/var/run/netns/dsr-server \
-    tc filter add dev $iface egress bpf da object-pinned /sys/fs/bpf/tc_egress_backend
-    sudo nsenter --net=/var/run/netns/dsr-server \
-    tc filter add dev $iface ingress bpf da object-pinned /sys/fs/bpf/tc_ingress_backend  
-    sudo ./dsr-ebpf-toy &  
-  done
+  sudo ip netns exec "$NS_L" tc qdisc add dev cl0 clsact || echo true
+  sudo ip netns exec "$NS_L" tc filter add dev cl0 ingress bpf da obj ebpf/tc_lb.o sec tc
+  map_id=$(sudo bpftool map list | grep service_dsr_ipv | cut -d: -f1)
+  echo mapId is $map_id
+  sudo bpftool map pin id $map_id /sys/fs/bpf/service_dsr_ipv4    
+
+  sudo ip netns exec "$NS_S" tc qdisc add dev cl0 clsact || echo true
+  sudo ip netns exec "$NS_S" tc qdisc add dev lb0 clsact || echo true
+  sudo bpftool prog load ebpf/tc_egress_backend.o /sys/fs/bpf/tc_egress_backend \
+  pinmaps /sys/fs/bpf/
+  sudo bpftool prog load ebpf/tc_ingress_backend.o /sys/fs/bpf/tc_ingress_backend \
+  map name flow_to_dsr pinned /sys/fs/bpf/flow_to_dsr    
+  sudo nsenter --net=/var/run/netns/$NS_S \
+  tc filter add dev cl0 egress bpf da object-pinned /sys/fs/bpf/tc_egress_backend
+  sudo nsenter --net=/var/run/netns/$NS_S \
+  tc filter add dev lb0 ingress bpf da object-pinned /sys/fs/bpf/tc_ingress_backend        
+  sudo ./dsr-ebpf-toy &
 }
 
 unload_ebpf() {
@@ -170,13 +170,11 @@ unload_ebpf() {
     sudo ip netns exec "$NS_L" tc filter del dev "$iface" ingress
     sudo rm /sys/fs/bpf/service_dsr_ipv4
   done
-  for iface in lb0; do
-    sudo nsenter --net=/var/run/netns/dsr-server tc filter del dev $iface egress
-    sudo nsenter --net=/var/run/netns/dsr-server tc filter del dev $iface ingress
-    sudo rm /sys/fs/bpf/tc_egress_backend
-    sudo rm /sys/fs/bpf/tc_ingress_backend
-    sudo rm /sys/fs/bpf/flow_to_dsr
-  done
+  sudo nsenter --net=/var/run/netns/dsr-server tc filter del dev cl0 egress
+  sudo nsenter --net=/var/run/netns/dsr-server tc filter del dev lb0 ingress
+  sudo rm /sys/fs/bpf/tc_egress_backend
+  sudo rm /sys/fs/bpf/tc_ingress_backend
+  sudo rm /sys/fs/bpf/flow_to_dsr
 }
 
 case "${1:-}" in
