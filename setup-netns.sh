@@ -78,6 +78,7 @@ up() {
   run_in "$NS_C" ip link set lb0 up
   run_in "$NS_C" ip link set srv0 up
   run_in "$NS_C" ip link set lo up
+  run_in "$NS_C" ip route add 1.1.1.1/32 via ${P}.1.2
 
   run_in "$NS_L" ip addr add "${P}.1.2/30" dev cl0
   run_in "$NS_L" ip addr add "${P}.2.1/30" dev srv0
@@ -103,9 +104,8 @@ up() {
   run_in "$NS_L" ip route add "${P}.3.0/30" via "${P}.2.2" dev srv0
 
   # dsr flow.  
-  run_in "$NS_LB" iptables -t nat -A PREROUTING -d 1.1.1.1 -j DNAT --to-destination "${P}.2.2"
-  run_in "$NS_LB" iptables -t nat -A POSTROUTING -d "${P}.2.2" -j MASQUERADE
-  run_in "$NS_C" ip r add 1.1.1.1/32 via "${P}.1.2"
+  run_in "$NS_L" iptables -t nat -A PREROUTING -d 1.1.1.1 -j DNAT --to-destination "${P}.2.2"
+  run_in "$NS_L" iptables -t nat -A POSTROUTING -d "${P}.2.2" -j MASQUERADE
 
   echo "up: $NS_C / $NS_L / $NS_S"
   echo "  client  lb0=${P}.1.1  srv0=${P}.3.2"
@@ -143,8 +143,6 @@ load_ebpf() {
   need_root
   # Example: load the same XDP program on all interfaces in the LB namespace.
   for iface in cl0; do
-    #ip netns exec "$NS_L" ip link set dev "$iface" xdp obj ebpf/xdp_lb.o sec xdp
-    #ip netns exec "$NS_L" ip link set dev "$iface" xdp off
     #sudo ip netns exec "$NS_L" tc qdisc add dev "$iface" clsact
     sudo ip netns exec "$NS_L" tc filter add dev "$iface" ingress bpf da obj ebpf/tc_lb.o sec tc
     map_id=$(sudo bpftool map list | grep service_dsr_ipv | cut -d: -f1)    
@@ -152,7 +150,8 @@ load_ebpf() {
     sudo bpftool map pin id $map_id /sys/fs/bpf/service_dsr_ipv4
   done
   for iface in lb0; do
-    ip netns exec "$NS_S" ip link set dev "$iface" xdp obj ebpf/xdp_ingress_backend.o sec xdp
+    #sudo ip netns exec "$NS_S" tc qdisc add dev "$iface" clsact
+    sudo ip netns exec "$NS_S" tc filter add dev "$iface" ingress bpf da obj ebpf/tc_ingress_backend.o sec tc    
     map_id=$(sudo bpftool map list | grep flow_to_dsr | cut -d: -f1)    
     echo mapId is $map_id
     sudo bpftool map pin id $map_id /sys/fs/bpf/flow_to_dsr
@@ -167,7 +166,7 @@ unload_ebpf() {
     sudo rm /sys/fs/bpf/service_dsr_ipv4
   done
   for iface in lb0; do
-    ip netns exec "$NS_S" ip link set dev "$iface" xdp off
+    sudo ip netns exec "$NS_S" tc filter del dev "$iface" ingress
     sudo rm /sys/fs/bpf/flow_to_dsr
   done
 }

@@ -9,6 +9,9 @@
 #define BE_ETH_P_IP 8
 #define BE_ETH_P_IPV6 56710
 #define MAX_IP_HDR_LENGTH 60
+#define TC_ACT_OK 0
+#define TC_ACT_SHOT -1
+#define TC_ACT_REDIRECT 7
 #ifndef memcpy
 #define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
 #endif
@@ -33,11 +36,11 @@ struct bpf_map_def SEC("maps") flow_to_dsr = { // fed by userspace, read by xdp
 };
 
 static __always_inline bool
-lookup_ip_svc_option(struct xdp_md *xdp, struct flow_key *key, __u32 *svc)
-{    
+lookup_ip_svc_option(struct __sk_buff *skb, struct flow_key *key, __u32 *svc)
+{
 
-    void *data = (void *)(long)xdp->data;
-    void *data_end = (void *)(long)xdp->data_end;
+    void *data = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
 
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) {
@@ -94,16 +97,73 @@ lookup_ip_svc_option(struct xdp_md *xdp, struct flow_key *key, __u32 *svc)
     return true;
 }
 
-SEC("xdp")
-int xdp_ingress_backend_prog(struct xdp_md *ctx) {
+static __always_inline bool
+remove_ip_svc_option(struct __sk_buff *skb) {
+    const __u32 opt_len = 8;
+
+    void *data = (void *)(long)skb->data;
+    void *data_end = (void *)(long)skb->data_end;
+
+    struct ethhdr *src_eth = data;
+    if ((void *)(src_eth + 1) > data_end) {
+        bpf_printk("remove_ip_svc_option: fail src_eth+1 oob\n");
+        return false;
+    }
+    struct iphdr *src_iph = (void *)(src_eth + 1);    
+    if (((void *)src_iph + opt_len) > data_end) {
+        bpf_printk("remove_ip_svc_option: fail src_iph+1 oob\n");
+        return false;
+    }
+    void *new_ip = (void *)src_iph + opt_len;
+    if (new_ip+sizeof(struct iphdr) > data_end) {
+        bpf_printk("remove_ip_svc_option: fail new_ip+sizeof(struct iphdr) oob\n");
+        return false;
+    }
+    memcpy(new_ip, src_iph, sizeof(struct iphdr));
+    void *new_eth = (void *)src_eth + opt_len;
+    memcpy(new_eth, src_eth, sizeof(struct ethhdr));
+    struct iphdr *new_iph = (struct iphdr *) new_ip;
+    if ((void *)(new_iph+1) > data_end) {
+        bpf_printk("remove_ip_svc_option: fail new_iph+1 oob\n");
+        return false;
+    }    
+        
+    new_iph->ihl = 5;
+    new_iph->tot_len = bpf_htons(bpf_ntohs(new_iph->tot_len) - opt_len);
+    new_iph->check = 0;
+    __u16 *hdr = (__u16 *)new_iph;
+    __u32 csum = 0;
+
+    #pragma unroll
+    for (int i = 0; i < 10; i++) {  // 20 bytes = 10 x 16-bit words
+        csum += hdr[i];
+    }
+    csum = (csum >> 16) + (csum & 0xFFFF);
+    csum += (csum >> 16);
+    new_iph->check = ~((__u16)csum);
+    bpf_printk("checksum written: %x", new_iph->check);
+    if (bpf_skb_adjust_room(skb, (int)-opt_len, BPF_ADJ_ROOM_MAC, 0)) {
+        return false;
+    }
+    return true;
+}
+
+SEC("tc")
+int tc_ingress_backend_prog(struct __sk_buff *skb) {
     __u32 mysvc = 0;
     struct flow_key mykey = {0};
     bpf_printk("lookup_ip_svc_option: starting\n");
-    if (lookup_ip_svc_option(ctx, &mykey, &mysvc)) {
+    if (lookup_ip_svc_option(skb, &mykey, &mysvc)) {
         bpf_printk("lookup_ip_svc_option: insertion about to happen\n");
         bpf_map_update_elem(&flow_to_dsr, &mykey, &mysvc, BPF_NOEXIST);
+        // TODO: remove ip option
+        if (!remove_ip_svc_option(skb)) {
+            bpf_printk("remove_ip_svc_option: failed\n");
+        }
+        bpf_printk("remove_ip_svc_option: success\n");
+        bpf_printk("lookup_ip_svc_option: ended\n");
+    } else {
+        bpf_printk("lookup_ip_svc_option: ended\n");
     }
-    bpf_printk("lookup_ip_svc_option: ended\n");
-    // TODO: remove ip option
-    return XDP_PASS;
+    return TC_ACT_OK;
 }

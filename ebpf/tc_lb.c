@@ -116,8 +116,8 @@ add_ip_svc_option(struct __sk_buff *skb, __be32 backend_ip_n)
         bpf_printk("add_ip_opt: fail new_eth+1 oob\n");
         return false;
     }
-    const __u8 lb_srv0_mac[6] = {0xce, 0x34, 0x01, 0x65, 0x38, 0x50};
-    const __u8 srv_cl0_mac[6] = {0xc6, 0xbe, 0x3e, 0x83, 0xa9, 0x36};
+    const __u8 lb_srv0_mac[6] = {0x82, 0xfc, 0xff, 0x65, 0xd3, 0xc1}; // 82:fc:ff:65:d3:c1
+    const __u8 srv_cl0_mac[6] = {0xc6, 0x51, 0x4e, 0xae, 0x15, 0x2e}; // c6:51:4e:ae:15:2e
     memcpy(eth->h_source, lb_srv0_mac, 6); //sudo ip netns exec dsr-lb cat /sys/class/net/srv0/address
     memcpy(eth->h_dest, srv_cl0_mac, 6); //sudo ip netns exec dsr-server cat /sys/class/net/cl0/address
     struct iphdr *iph = (void *)(eth + 1);
@@ -164,7 +164,7 @@ int tc_prog(struct __sk_buff *skb)
 		bpf_printk("ip=%08x\n", __builtin_bswap32((__be32)iph->daddr));  /* 203.0.113.1 → 0xcb007101 style */
     return TC_ACT_OK;
   }
-  __u32 ifindex = 9529; // TODO, set from sudo ip netns exec dsr-lb cat /sys/class/net/srv0/ifindex;
+  __u32 ifindex = 10202; // TODO, set from sudo ip netns exec dsr-lb cat /sys/class/net/srv0/ifindex;
   bpf_redirect(ifindex, 0);
 	return TC_ACT_REDIRECT;
 }
