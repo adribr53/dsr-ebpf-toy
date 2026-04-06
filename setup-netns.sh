@@ -166,10 +166,8 @@ load_ebpf() {
 unload_ebpf() {
   need_root
   # Example: load the same XDP program on all interfaces in the LB namespace.
-  for iface in cl0; do
-    sudo ip netns exec "$NS_L" tc filter del dev "$iface" ingress
-    sudo rm /sys/fs/bpf/service_dsr_ipv4
-  done
+  sudo ip netns exec "$NS_L" tc filter del dev cl0 ingress
+  sudo rm /sys/fs/bpf/service_dsr_ipv4  
   sudo nsenter --net=/var/run/netns/dsr-server tc filter del dev cl0 egress
   sudo nsenter --net=/var/run/netns/dsr-server tc filter del dev lb0 ingress
   sudo rm /sys/fs/bpf/tc_egress_backend
