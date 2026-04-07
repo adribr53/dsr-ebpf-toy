@@ -116,10 +116,6 @@ add_ip_svc_option(struct __sk_buff *skb, __be32 backend_ip_n)
         bpf_printk("add_ip_opt: fail new_eth+1 oob\n");
         return false;
     }
-    const __u8 lb_srv0_mac[6] = {0x9a, 0xfb, 0x5e, 0x3c, 0x3b, 0xc2}; // TODO: set from script
-    const __u8 srv_lb0_mac[6] = {0x16, 0x70, 0x06, 0x8c, 0xb5, 0x3f}; //16:70:06:8c:b5:3f
-    memcpy(eth->h_source, lb_srv0_mac, 6); //sudo ip netns exec dsr-lb cat /sys/class/net/srv0/address
-    memcpy(eth->h_dest, srv_lb0_mac, 6); //sudo ip netns exec dsr-server cat /sys/class/net/cl0/address
     struct iphdr *iph = (void *)(eth + 1);
     if ((void *)(iph + 1) > data_end) {
         bpf_printk("add_ip_opt: fail new_iph+1 oob\n");
@@ -165,6 +161,5 @@ int tc_prog(struct __sk_buff *skb)
     return TC_ACT_OK;
   }
   __u32 ifindex = 10232; // TODO, set from sudo ip netns exec dsr-lb cat /sys/class/net/srv0/ifindex;
-  bpf_redirect(ifindex, 0);
-	return TC_ACT_REDIRECT;
+  return bpf_redirect_neigh(ifindex, NULL, 0, 0);
 }
